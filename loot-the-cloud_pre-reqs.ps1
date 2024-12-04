@@ -3,25 +3,58 @@
 # Function to add Windows Defender exclusions
 function Add-WindowsDefenderExclusions {
     Write-Host "Adding Windows Defender exclusions for MFASweep..."
-    $excludedFiles = @(
-        "$env:USERPROFILE\Desktop\tools\MFASweep\MFASweep.ps1"
+
+    # Ensure the tools directory exists
+    $toolsDir = "$env:USERPROFILE\Desktop\tools"
+    if (!(Test-Path $toolsDir)) {
+        New-Item -ItemType Directory -Path $toolsDir -Force
+    }
+
+    # Add exclusion for the MFASweep.ps1 file
+    $mfSweepPath = "$toolsDir\MFASweep\MFASweep.ps1"
+    $exclusionAdded = $false
+
+    if (!(Get-MpPreference).ExclusionPath -contains $mfSweepPath) {
+        Write-Host "Excluding: $mfSweepPath"
+        Add-MpPreference -ExclusionPath $mfSweepPath
+        $exclusionAdded = $true
+    } else {
+        Write-Host "MFASweep.ps1 is already excluded in Windows Defender."
+    }
+
+    Write-Host "Windows Defender exclusions added."
+
+    # Restore the file from quarantine if it was quarantined
+    Restore-QuarantinedFile -FilePath $mfSweepPath
+}
+
+# Function to restore a quarantined file
+function Restore-QuarantinedFile {
+    param (
+        [string]$FilePath
     )
 
-    foreach ($file in $excludedFiles) {
-        if (Test-Path $file) {
-            Write-Host "Excluding: $file"
-            Add-MpPreference -ExclusionPath $file
-        } else {
-            Write-Host "File not found: $file. Ensure it exists before running this script again."
+    Write-Host "Attempting to restore quarantined file: $FilePath"
+
+    # Get the list of quarantined items
+    $quarantinedItems = Get-MpThreatDetection
+
+    foreach ($item in $quarantinedItems) {
+        if ($item.Resources -contains $FilePath) {
+            Write-Host "Restoring quarantined file: $FilePath"
+            Start-MpScan -ScanType CustomScan -ScanPath $FilePath -Restore -Force
+            Write-Host "File restored from quarantine."
+            return
         }
     }
-    Write-Host "Windows Defender exclusions added."
+
+    Write-Host "File not found in quarantine."
 }
 
 # Function to re-run the script
 function ReRun-Script {
     Write-Host "Re-running the script to ensure all components are installed..."
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$PSCommandPath`"" -Wait
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$PSCommandPath`"" -Wait -Verb RunAs
     Exit
 }
 
@@ -33,6 +66,13 @@ function Check-DefenderInterrupt {
         Add-WindowsDefenderExclusions
         ReRun-Script
     }
+}
+
+# Function to refresh environment variables in the current session
+function Refresh-EnvironmentVariables {
+    Write-Host "Refreshing environment variables..."
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine) + ';' +
+                [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::User)
 }
 
 # Main Installation Script
@@ -86,27 +126,33 @@ if (!(Get-Command winget -ErrorAction SilentlyContinue)) {
 
 # Step 4: Install Git
 Write-Host "Checking for Git installation..."
-if (!(Get-Command git -ErrorAction SilentlyContinue)) {
+if (!(Get-Command git.exe -ErrorAction SilentlyContinue)) {
     Write-Host "Git is not installed. Installing Git..."
     $ProgressPreference = 'SilentlyContinue'
 
+    # Update winget sources
+    winget source update
+
     # Use winget to install Git if available, otherwise fall back to direct download
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements
+        winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements --silent
     } else {
         Write-Host "winget is still unavailable. Installing Git using direct download..."
         $GitInstaller = "$env:USERPROFILE\Downloads\GitInstaller.exe"
         Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/latest/download/Git-64-bit.exe" -OutFile $GitInstaller
 
         # Install Git silently
-        Start-Process -FilePath $GitInstaller -ArgumentList "/SILENT" -Wait
+        Start-Process -FilePath $GitInstaller -ArgumentList "/VERYSILENT" -Wait
 
         # Remove the installer file after installation
         Remove-Item -Path $GitInstaller -Force
     }
 
+    # Refresh environment variables
+    Refresh-EnvironmentVariables
+
     # Verify Git installation
-    if (Get-Command git -ErrorAction SilentlyContinue) {
+    if (Get-Command git.exe -ErrorAction SilentlyContinue) {
         Write-Host "Git was installed successfully."
     } else {
         Write-Host "Git installation failed. Please check your system and try again."
@@ -116,13 +162,16 @@ if (!(Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "Git is already installed."
 }
 
-# Step 5: Set up tools directory
+# Step 5: Add Windows Defender exclusions before cloning repositories
+Add-WindowsDefenderExclusions
+
+# Step 6: Set up tools directory
 Write-Host "Setting up tools directory..."
 $toolsDir = "$env:USERPROFILE\Desktop\tools"
 mkdir $toolsDir -Force
 cd $toolsDir
 
-# Step 6: Clone and Set Up MFA Sweep
+# Step 7: Clone and Set Up MFA Sweep
 if (!(Test-Path .\MFASweep)) {
     Write-Host "Cloning MFA Sweep..."
     git clone https://github.com/dafthack/MFASweep.git
@@ -134,7 +183,7 @@ cd .\MFASweep\
 Import-Module .\MFASweep.ps1
 Check-DefenderInterrupt
 
-# Step 7: Clone and Set Up GraphRunner
+# Step 8: Clone and Set Up GraphRunner
 cd $toolsDir
 if (!(Test-Path .\GraphRunner)) {
     Write-Host "Cloning GraphRunner..."
@@ -147,7 +196,7 @@ cd .\GraphRunner\
 Import-Module .\GraphRunner.ps1
 Check-DefenderInterrupt
 
-# Step 8: Install Az PowerShell Module
+# Step 9: Install Az PowerShell Module
 Write-Host "Checking for Az PowerShell Module..."
 $AzModule = Get-Module -ListAvailable -Name Az | Select-Object -First 1
 
