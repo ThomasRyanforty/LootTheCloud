@@ -38,17 +38,23 @@ function Check-DefenderInterrupt {
 # Main Installation Script
 $ErrorActionPreference = "Stop"
 
-# Step 1: Install Az PowerShell Module
-if (!(Get-Module -ListAvailable -Name Az)) {
-    Write-Host "Installing Az PowerShell Module..."
-    Install-Module Az -Force -ErrorAction Stop
+# Ensure the NuGet provider is installed
+Write-Host "Installing NuGet provider..."
+Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction Stop
+Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+# Step 1: Install Microsoft Graph PowerShell SDK
+if (!(Get-Module -ListAvailable -Name Microsoft.Graph)) {
+    Write-Host "Installing Microsoft Graph PowerShell SDK..."
+    Install-Module Microsoft.Graph -Scope CurrentUser -Force -ErrorAction Stop
 } else {
-    Write-Host "Az PowerShell Module is already installed."
+    Write-Host "Microsoft Graph PowerShell SDK is already installed."
 }
 
 # Step 2: Install Azure CLI
+Write-Host "Checking for Azure CLI installation..."
 if (!(Get-Command az -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing Azure CLI..."
+    Write-Host "Azure CLI is not installed. Installing now..."
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri https://aka.ms/installazurecliwindows -OutFile .\AzureCLI.msi
     Start-Process msiexec.exe -Wait -ArgumentList '/I AzureCLI.msi /quiet'
@@ -57,21 +63,66 @@ if (!(Get-Command az -ErrorAction SilentlyContinue)) {
     Write-Host "Azure CLI is already installed."
 }
 
-# Step 3: Install Git
+# Step 3: Install WinGet
+Write-Host "Checking for WinGet installation..."
+if (!(Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Host "WinGet is not installed. Downloading and installing now..."
+
+    # Download the WinGet installer directly from GitHub
+    $wingetInstallerUrl = "https://github.com/microsoft/winget-cli/releases/download/v1.9.25200/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+    $wingetInstallerPath = "$env:TEMP\WinGet.msixbundle"
+    Invoke-WebRequest -Uri $wingetInstallerUrl -OutFile $wingetInstallerPath -UseBasicParsing
+
+    # Install WinGet
+    Add-AppxPackage -Path $wingetInstallerPath
+
+    # Clean up installer file
+    Remove-Item $wingetInstallerPath -Force
+
+    Write-Host "WinGet installation complete."
+} else {
+    Write-Host "WinGet is already installed."
+}
+
+# Step 4: Install Git
+Write-Host "Checking for Git installation..."
 if (!(Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing Git using winget..."
-    winget install --id Git.Git -e --source winget
+    Write-Host "Git is not installed. Installing Git..."
+    $ProgressPreference = 'SilentlyContinue'
+
+    # Use winget to install Git if available, otherwise fall back to direct download
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements
+    } else {
+        Write-Host "winget is still unavailable. Installing Git using direct download..."
+        $GitInstaller = "$env:USERPROFILE\Downloads\GitInstaller.exe"
+        Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/latest/download/Git-64-bit.exe" -OutFile $GitInstaller
+
+        # Install Git silently
+        Start-Process -FilePath $GitInstaller -ArgumentList "/SILENT" -Wait
+
+        # Remove the installer file after installation
+        Remove-Item -Path $GitInstaller -Force
+    }
+
+    # Verify Git installation
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        Write-Host "Git was installed successfully."
+    } else {
+        Write-Host "Git installation failed. Please check your system and try again."
+        Exit 1
+    }
 } else {
     Write-Host "Git is already installed."
 }
 
-# Step 4: Set up tools directory
+# Step 5: Set up tools directory
 Write-Host "Setting up tools directory..."
-cd $env:USERPROFILE\Desktop
-mkdir tools -Force
-cd .\tools\
+$toolsDir = "$env:USERPROFILE\Desktop\tools"
+mkdir $toolsDir -Force
+cd $toolsDir
 
-# Step 5: Clone and Set Up MFA Sweep
+# Step 6: Clone and Set Up MFA Sweep
 if (!(Test-Path .\MFASweep)) {
     Write-Host "Cloning MFA Sweep..."
     git clone https://github.com/dafthack/MFASweep.git
@@ -83,8 +134,8 @@ cd .\MFASweep\
 Import-Module .\MFASweep.ps1
 Check-DefenderInterrupt
 
-# Step 6: Clone and Set Up GraphRunner
-cd ..
+# Step 7: Clone and Set Up GraphRunner
+cd $toolsDir
 if (!(Test-Path .\GraphRunner)) {
     Write-Host "Cloning GraphRunner..."
     git clone https://github.com/dafthack/GraphRunner.git
@@ -95,5 +146,23 @@ if (!(Test-Path .\GraphRunner)) {
 cd .\GraphRunner\
 Import-Module .\GraphRunner.ps1
 Check-DefenderInterrupt
+
+# Step 8: Install Az PowerShell Module
+Write-Host "Checking for Az PowerShell Module..."
+$AzModule = Get-Module -ListAvailable -Name Az | Select-Object -First 1
+
+if ($AzModule) {
+    Write-Host "Az PowerShell Module is already installed. Version: $($AzModule.Version)"
+} else {
+    Write-Host "Az PowerShell Module is not installed. Installing now..."
+    Install-Module Az -Force -ErrorAction Stop
+}
+
+# Optional: Check for a specific minimum version
+$RequiredAzVersion = [Version]"10.0.0"  # Specify your required version here
+if ($AzModule -and $AzModule.Version -lt $RequiredAzVersion) {
+    Write-Host "Az PowerShell Module is outdated (Version: $($AzModule.Version)). Upgrading to $RequiredAzVersion..."
+    Install-Module Az -Force -ErrorAction Stop
+}
 
 Write-Host "Setup Complete!"
